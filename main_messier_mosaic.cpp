@@ -681,20 +681,23 @@ QImage MessierMosaicCreator::createZoomedView(const QImage& fullMosaic) {
     double widthFraction = objectWidth / fieldWidth;
     double heightFraction = objectHeight / fieldHeight;
     
-    // Conservative zoom limits based on real field size
-    widthFraction = std::max(0.3, std::min(1.0, widthFraction));   // At least 30% of mosaic
-    heightFraction = std::max(0.3, std::min(1.0, heightFraction)); // At least 30% of mosaic
+    // ASPECT RATIO PRESERVATION: Use the larger fraction to maintain object proportions
+    double zoomFraction = std::max(widthFraction, heightFraction);
+    
+    // Apply conservative zoom limits
+    zoomFraction = std::max(0.3, std::min(1.0, zoomFraction));   // At least 30% of mosaic
     
     // For very small objects, use even more conservative minimum zoom
     if (m_currentObject.size_arcmin.width() < 2.0 || m_currentObject.size_arcmin.height() < 2.0) {
-        widthFraction = std::max(widthFraction, 0.5);   // Minimum 50% for tiny objects
-        heightFraction = std::max(heightFraction, 0.5); // Minimum 50% for tiny objects
+        zoomFraction = std::max(zoomFraction, 0.5);   // Minimum 50% for tiny objects
         qDebug() << QString("  Applied conservative minimum zoom for very small object");
     }
     
-    // Calculate crop rectangle centered on the brightness peak
-    int cropWidth = static_cast<int>(fullMosaic.width() * widthFraction);
-    int cropHeight = static_cast<int>(fullMosaic.height() * heightFraction);
+    // Calculate crop rectangle with preserved aspect ratio (square crop)
+    // The crop will be square, but large enough to contain the entire object with its natural proportions
+    int cropSize = static_cast<int>(std::min(fullMosaic.width(), fullMosaic.height()) * zoomFraction);
+    int cropWidth = cropSize;
+    int cropHeight = cropSize;
     
     int cropX = actualCenter.x() - cropWidth / 2;
     int cropY = actualCenter.y() - cropHeight / 2;
@@ -706,12 +709,15 @@ QImage MessierMosaicCreator::createZoomedView(const QImage& fullMosaic) {
     QRect cropRect(cropX, cropY, cropWidth, cropHeight);
     
     // Calculate the actual angular size of the cropped view
-    double cropFieldWidth = (cropWidth * ARCSEC_PER_PIXEL) / 60.0;   // Convert to arcmin
-    double cropFieldHeight = (cropHeight * ARCSEC_PER_PIXEL) / 60.0; // Convert to arcmin
+    double cropFieldSize = (cropSize * ARCSEC_PER_PIXEL) / 60.0;   // Convert to arcmin
     
     // Calculate offset from geometric center for debugging
     int offsetX = actualCenter.x() - fullMosaic.width()/2;
     int offsetY = actualCenter.y() - fullMosaic.height()/2;
+    
+    // Calculate object coverage within the crop
+    double objectCoverageWidth = (m_currentObject.size_arcmin.width() * paddingFactor) / cropFieldSize * 100.0;
+    double objectCoverageHeight = (m_currentObject.size_arcmin.height() * paddingFactor) / cropFieldSize * 100.0;
     
     qDebug() << QString("Zoom calculation for %1 (using plate solve data):").arg(m_currentObject.name);
     qDebug() << QString("  Object size: %1 × %2 arcmin (with %3x padding: %4 × %5)")
@@ -724,15 +730,17 @@ QImage MessierMosaicCreator::createZoomedView(const QImage& fullMosaic) {
                 .arg(fieldWidth, 0, 'f', 1)
                 .arg(fieldHeight, 0, 'f', 1)
                 .arg(ARCSEC_PER_PIXEL, 0, 'f', 2);
-    qDebug() << QString("  Crop field: %1 × %2 arcmin (%3×%4 pixels)")
-                .arg(cropFieldWidth, 0, 'f', 1)
-                .arg(cropFieldHeight, 0, 'f', 1)
+    qDebug() << QString("  Crop field: %1 × %2 arcmin (%3×%4 pixels) - SQUARE CROP")
+                .arg(cropFieldSize, 0, 'f', 1)
+                .arg(cropFieldSize, 0, 'f', 1)
                 .arg(cropWidth).arg(cropHeight);
+    qDebug() << QString("  Object coverage: %1% × %2% of crop area")
+                .arg(objectCoverageWidth, 0, 'f', 1)
+                .arg(objectCoverageHeight, 0, 'f', 1);
     qDebug() << QString("  Brightness offset: %1,%2 pixels from geometric center")
                 .arg(offsetX).arg(offsetY);
-    qDebug() << QString("  Crop fraction: %1 × %2, Crop rect: %3,%4")
-                .arg(widthFraction, 0, 'f', 3)
-                .arg(heightFraction, 0, 'f', 3)
+    qDebug() << QString("  Zoom fraction: %1, Crop rect: %2,%3")
+                .arg(zoomFraction, 0, 'f', 3)
                 .arg(cropX).arg(cropY);
     
     return fullMosaic.copy(cropRect);
