@@ -49,10 +49,13 @@ private:
     QLabel* m_previewLabel;
     QLabel* m_statusLabel;
     QCheckBox* m_zoomToObjectCheckBox;
+    QComboBox* m_gridSizeSelector;
     
-    // Current selection
+    // Current selection and settings
     MessierObject m_currentObject;
     QImage m_fullMosaic;  // Store the full mosaic for zooming
+    int m_gridWidth;      // Current grid width (e.g., 3, 4, 6)
+    int m_gridHeight;     // Current grid height (e.g., 3, 4, 6)
     
     // Simple tile structure for 3x3 grid
     struct SimpleTile {
@@ -80,12 +83,22 @@ private:
     void updatePreviewDisplay();
     QPoint findBrightnessCenter(const QImage& image);
     QImage applyGaussianBlur(const QImage& image, int radius);
+    void updateGridSize();
+    QString getGridDisplayName(int width, int height);
+    void updateGridRecommendation();
+    QString getRecommendedGridSize();
+    void testGridGeneration();  // Add generation test method
+    void testGridValidation();  // Add validation test method
 };
 
 MessierMosaicCreator::MessierMosaicCreator(QWidget *parent) : QWidget(parent) {
     m_hipsClient = new ProperHipsClient(this);
     m_networkManager = new QNetworkAccessManager(this);
     m_currentTileIndex = 0;
+    
+    // Default grid size
+    m_gridWidth = 3;
+    m_gridHeight = 3;
     
     // Create output directory
     m_outputDir = "messier_mosaics";
@@ -94,7 +107,7 @@ MessierMosaicCreator::MessierMosaicCreator(QWidget *parent) : QWidget(parent) {
     setupUI();
     
     qDebug() << "=== Messier Object Mosaic Creator ===";
-    qDebug() << "Select any Messier object to create a 3x3 HiPS mosaic!";
+    qDebug() << "Select any Messier object and grid size to create HiPS mosaics!";
 }
 
 void MessierMosaicCreator::setupUI() {
@@ -129,7 +142,28 @@ void MessierMosaicCreator::setupUI() {
     m_zoomToObjectCheckBox->setToolTip("Crop display to show only the catalogued size of the Messier object");
     connect(m_zoomToObjectCheckBox, &QCheckBox::toggled, this, &MessierMosaicCreator::updatePreviewDisplay);
     
+    // Grid size selector
+    m_gridSizeSelector = new QComboBox(this);
+    m_gridSizeSelector->addItem("3×3 grid (41 arcmin)", QVariantList{3, 3});
+    m_gridSizeSelector->addItem("4×4 grid (55 arcmin)", QVariantList{4, 4});
+    m_gridSizeSelector->addItem("5×5 grid (69 arcmin)", QVariantList{5, 5});
+    m_gridSizeSelector->addItem("6×6 grid (83 arcmin)", QVariantList{6, 6});
+    m_gridSizeSelector->addItem("8×8 grid (110 arcmin)", QVariantList{8, 8});
+    m_gridSizeSelector->addItem("10×10 grid (137 arcmin)", QVariantList{10, 10});
+    m_gridSizeSelector->addItem("12×12 grid (165 arcmin)", QVariantList{12, 12});
+    m_gridSizeSelector->addItem("15×15 grid (206 arcmin)", QVariantList{15, 15});
+    m_gridSizeSelector->addItem("4×3 grid (55×41 arcmin)", QVariantList{4, 3});
+    m_gridSizeSelector->addItem("6×4 grid (83×55 arcmin)", QVariantList{6, 4});
+    m_gridSizeSelector->addItem("8×6 grid (110×83 arcmin)", QVariantList{8, 6});
+    m_gridSizeSelector->addItem("10×8 grid (137×110 arcmin)", QVariantList{10, 8});
+    m_gridSizeSelector->addItem("15×8 grid (206×110 arcmin)", QVariantList{15, 8});
+    m_gridSizeSelector->addItem("20×10 grid (275×137 arcmin)", QVariantList{20, 10});
+    m_gridSizeSelector->setToolTip("Select mosaic grid size - larger grids show more context");
+    connect(m_gridSizeSelector, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &MessierMosaicCreator::updateGridSize);
+    
     selectorLayout->addWidget(m_objectSelector);
+    selectorLayout->addWidget(m_gridSizeSelector);
     selectorLayout->addWidget(m_createButton);
     selectorLayout->addWidget(m_zoomToObjectCheckBox);
     selectorLayout->addStretch();
@@ -174,6 +208,9 @@ void MessierMosaicCreator::setupUI() {
     
     // Initialize with first object
     onObjectSelectionChanged();
+    
+    // Run grid validation test on startup
+    testGridValidation();
 }
 
 void MessierMosaicCreator::onObjectSelectionChanged() {
@@ -247,29 +284,55 @@ void MessierMosaicCreator::createMosaic(const MessierObject& messierObj) {
     m_currentTileIndex = 0;
     processNextTile();
 }
-
+// Fixed createTileGrid method for MessierMosaicCreator
 void MessierMosaicCreator::createTileGrid(const SkyPosition& position) {
     m_tiles.clear();
     int order = 8;
     
-    // Calculate 3x3 grid around the target position
+    // Calculate center pixel using HEALPix
     long long centerPixel = m_hipsClient->calculateHealPixel(position, order);
-    QList<QList<long long>> grid = m_hipsClient->createProper3x3Grid(centerPixel, order);
     
-    qDebug() << QString("Creating 3×3 tile grid for %1:").arg(position.name);
+    qDebug() << QString("Creating %1×%2 tile grid for %3:")
+                .arg(m_gridWidth).arg(m_gridHeight).arg(position.name);
     
-    for (int y = 0; y < 3; y++) {
-        for (int x = 0; x < 3; x++) {
+    // Generate the grid using the improved algorithm
+    QList<QList<long long>> pixelGrid = m_hipsClient->createProperNxMGrid(centerPixel, order, m_gridWidth, m_gridHeight);
+    
+    if (pixelGrid.isEmpty() || pixelGrid.size() != m_gridHeight || pixelGrid[0].size() != m_gridWidth) {
+        qDebug() << "❌ Grid generation failed, using fallback";
+        
+        // Simple fallback: create grid with center pixel and estimated neighbors
+        pixelGrid.clear();
+        pixelGrid.resize(m_gridHeight);
+        
+        long long nside = 1LL << order;
+        long long pixelSpacing = nside / 32; // Reasonable spacing estimate
+        
+        int centerX = m_gridWidth / 2;
+        int centerY = m_gridHeight / 2;
+        
+        for (int y = 0; y < m_gridHeight; y++) {
+            pixelGrid[y].resize(m_gridWidth);
+            for (int x = 0; x < m_gridWidth; x++) {
+                int dx = x - centerX;
+                int dy = y - centerY;
+                pixelGrid[y][x] = centerPixel + dy * pixelSpacing * 8 + dx * pixelSpacing;
+            }
+        }
+    }
+    
+    // Convert pixel grid to tile objects
+    for (int y = 0; y < m_gridHeight; y++) {
+        for (int x = 0; x < m_gridWidth; x++) {
             SimpleTile tile;
             tile.gridX = x;
             tile.gridY = y;
-            tile.healpixPixel = grid[y][x];
+            tile.healpixPixel = pixelGrid[y][x];
             tile.downloaded = false;
             
-            // Build filename and URL
-            QString objectName = m_currentObject.name.toLower();
-            tile.filename = QString("%1/%2_tile_%3_%4_pixel%5.jpg")
-                           .arg(m_outputDir).arg(objectName).arg(x).arg(y).arg(tile.healpixPixel);
+            // Build filename based on HEALPix parameters only (for caching across objects)
+            tile.filename = QString("%1/hips_order%2_pixel%3.jpg")
+                           .arg(m_outputDir).arg(order).arg(tile.healpixPixel);
             
             int dir = (tile.healpixPixel / 10000) * 10000;
             tile.url = QString("http://alasky.u-strasbg.fr/DSS/DSSColor/Norder%1/Dir%2/Npix%3.jpg")
@@ -287,7 +350,196 @@ void MessierMosaicCreator::createTileGrid(const SkyPosition& position) {
         }
     }
     
-    qDebug() << QString("Created %1 tile grid for %2").arg(m_tiles.size()).arg(position.name);
+    qDebug() << QString("Created %1×%2 grid (%3 tiles) for %4")
+                .arg(m_gridWidth).arg(m_gridHeight).arg(m_tiles.size()).arg(position.name);
+}
+
+// Fixed assembleFinalMosaic to handle variable grid sizes
+void MessierMosaicCreator::assembleFinalMosaic() {
+    qDebug() << QString("\n=== Assembling %1 Mosaic ===").arg(m_currentObject.name);
+    
+    int successfulTiles = 0;
+    for (const SimpleTile& tile : m_tiles) {
+        if (tile.downloaded && !tile.image.isNull()) {
+            successfulTiles++;
+        }
+    }
+    
+    qDebug() << QString("Downloaded %1/%2 tiles for %3")
+                .arg(successfulTiles).arg(m_tiles.size()).arg(m_currentObject.name);
+    
+    if (successfulTiles == 0) {
+        qDebug() << "❌ No tiles downloaded successfully";
+        m_statusLabel->setText(QString("Failed to download tiles for %1").arg(m_currentObject.name));
+        m_createButton->setEnabled(true);
+        return;
+    }
+    
+    // FIXED: Create variable-size mosaic based on actual grid dimensions
+    int tileSize = 512;
+    int mosaicWidth = m_gridWidth * tileSize;
+    int mosaicHeight = m_gridHeight * tileSize;
+    
+    QImage finalMosaic(mosaicWidth, mosaicHeight, QImage::Format_RGB32);
+    finalMosaic.fill(Qt::black);
+    
+    QPainter painter(&finalMosaic);
+    
+    int tilesPlaced = 0;
+    
+    qDebug() << QString("Placing tiles for %1 in %2x%3 grid:")
+                .arg(m_currentObject.name).arg(m_gridWidth).arg(m_gridHeight);
+    
+    for (const SimpleTile& tile : m_tiles) {
+        if (!tile.downloaded || tile.image.isNull()) {
+            qDebug() << QString("  Skipping tile %1,%2 - not downloaded").arg(tile.gridX).arg(tile.gridY);
+            continue;
+        }
+        
+        // Calculate placement position
+        int pixelX = tile.gridX * tileSize;
+        int pixelY = tile.gridY * tileSize;
+        
+        // Draw the tile
+        painter.drawImage(pixelX, pixelY, tile.image);
+        
+        tilesPlaced++;
+        
+        qDebug() << QString("  ✅ Placed tile (%1,%2) at pixel (%3,%4)")
+                    .arg(tile.gridX).arg(tile.gridY).arg(pixelX).arg(pixelY);
+    }
+    
+    // Add crosshairs and label at center
+    painter.setPen(QPen(Qt::yellow, 3));
+    int centerX = mosaicWidth / 2;
+    int centerY = mosaicHeight / 2;
+    
+    // Draw crosshairs
+    painter.drawLine(centerX - 30, centerY, centerX + 30, centerY);
+    painter.drawLine(centerX, centerY - 30, centerX, centerY + 30);
+    
+    // Add object label
+    painter.setPen(QPen(Qt::yellow, 1));
+    painter.setFont(QFont("Arial", 14, QFont::Bold));
+    QString labelText = m_currentObject.name;
+    if (!m_currentObject.common_name.isEmpty()) {
+        labelText = m_currentObject.common_name;
+    }
+    painter.drawText(centerX + 40, centerY - 10, labelText);
+    
+    // Add object type label
+    painter.setFont(QFont("Arial", 10));
+    painter.drawText(centerX + 40, centerY + 10, 
+                    MessierCatalog::objectTypeToString(m_currentObject.object_type));
+    
+    painter.end();
+    
+    // Store the full mosaic for potential zooming
+    m_fullMosaic = finalMosaic;
+    
+    // Save final mosaic
+    QString objectName = m_currentObject.name.toLower();
+    QString gridSizeName = QString("%1x%2").arg(m_gridWidth).arg(m_gridHeight);
+    QString mosaicFilename = QString("%1/%2_mosaic_%3.png").arg(m_outputDir).arg(objectName).arg(gridSizeName);
+    bool saved = finalMosaic.save(mosaicFilename);
+    
+    qDebug() << QString("\n🖼️  %1 mosaic complete!").arg(m_currentObject.name);
+    qDebug() << QString("📁 Size: %1×%2 pixels (%3 tiles placed)")
+                .arg(mosaicWidth).arg(mosaicHeight).arg(tilesPlaced);
+    qDebug() << QString("📁 Saved to: %1 (%2)")
+                .arg(mosaicFilename).arg(saved ? "SUCCESS" : "FAILED");
+    
+    // FIXED: Scale preview to fit 400x400 while maintaining aspect ratio
+    int previewSize = 400;
+    QPixmap preview = QPixmap::fromImage(finalMosaic.scaled(previewSize, previewSize, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    m_previewLabel->setPixmap(preview);
+    
+    // Also save a smaller preview
+    QString previewFilename = QString("%1/%2_preview_%3.jpg").arg(m_outputDir).arg(objectName).arg(gridSizeName);
+    QImage preview512 = finalMosaic.scaled(512, 512, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    preview512.save(previewFilename);
+    qDebug() << QString("📁 Preview: %1").arg(previewFilename);
+    
+    saveProgressReport();
+    
+    m_statusLabel->setText(QString("✅ %1 mosaic complete! (%2×%3 grid, %4 tiles)")
+                          .arg(m_currentObject.name).arg(m_gridWidth).arg(m_gridHeight).arg(tilesPlaced));
+    
+    qDebug() << QString("\n🎯 %1 MOSAIC COMPLETE!").arg(m_currentObject.name);
+    qDebug() << QString("✅ %1 should be visible in the center tile with crosshairs").arg(labelText);
+    
+    m_createButton->setEnabled(true);
+}
+
+// Add method to test grid generation before creating mosaic
+void MessierMosaicCreator::testGridGeneration() {
+    if (m_currentObject.name.isEmpty()) {
+        qDebug() << "No object selected for grid test";
+        return;
+    }
+    
+    qDebug() << QString("\n=== Testing Grid Generation for %1 ===").arg(m_currentObject.name);
+    
+    int order = 8;
+    long long centerPixel = m_hipsClient->calculateHealPixel(m_currentObject.sky_position, order);
+    
+    qDebug() << QString("Object: %1 at pixel %2 (order %3)")
+                .arg(m_currentObject.name).arg(centerPixel).arg(order);
+    
+    if (centerPixel < 0) {
+        qDebug() << "❌ Failed to calculate center pixel";
+        return;
+    }
+    
+    // Test the current grid size
+    QList<QList<long long>> testGrid = m_hipsClient->createProperNxMGrid(centerPixel, order, m_gridWidth, m_gridHeight);
+    
+    if (testGrid.isEmpty()) {
+        qDebug() << QString("❌ Grid generation failed for %1×%2").arg(m_gridWidth).arg(m_gridHeight);
+        return;
+    }
+    
+    if (testGrid.size() != m_gridHeight || testGrid[0].size() != m_gridWidth) {
+        qDebug() << QString("❌ Grid dimensions wrong: expected %1×%2, got %3×%4")
+                    .arg(m_gridWidth).arg(m_gridHeight)
+                    .arg(testGrid[0].size()).arg(testGrid.size());
+        return;
+    }
+    
+    // Verify center pixel
+    int centerX = m_gridWidth / 2;
+    int centerY = m_gridHeight / 2;
+    long long actualCenter = testGrid[centerY][centerX];
+    
+    if (actualCenter == centerPixel) {
+        qDebug() << QString("✅ Grid generation successful for %1×%2")
+                    .arg(m_gridWidth).arg(m_gridHeight);
+        qDebug() << QString("✅ Center pixel verified at (%1,%2): %3")
+                    .arg(centerX).arg(centerY).arg(actualCenter);
+    } else {
+        qDebug() << QString("⚠️  Grid center mismatch: expected %1, got %2")
+                    .arg(centerPixel).arg(actualCenter);
+    }
+    
+    // Count valid pixels
+    int validPixels = 0;
+    for (int y = 0; y < m_gridHeight; y++) {
+        for (int x = 0; x < m_gridWidth; x++) {
+            if (testGrid[y][x] >= 0) {
+                validPixels++;
+            }
+        }
+    }
+    
+    double coverage = double(validPixels) / double(m_gridWidth * m_gridHeight) * 100.0;
+    qDebug() << QString("Coverage: %1/%2 pixels valid (%3%)")
+                .arg(validPixels).arg(m_gridWidth * m_gridHeight).arg(coverage, 0, 'f', 1);
+    
+    if (coverage >= 95.0) {
+        qDebug() << QString("✅ Grid ready for mosaic creation");
+    } else {
+        qDebug() << QString("⚠️  Low pixel coverage - mosaic may have gaps");
+    }
 }
 
 void MessierMosaicCreator::processNextTile() {
@@ -299,7 +551,7 @@ void MessierMosaicCreator::processNextTile() {
     // Check if tile already exists and is valid before downloading
     SimpleTile& tile = m_tiles[m_currentTileIndex];
     if (checkExistingTile(tile)) {
-        qDebug() << QString("✓ Using existing tile %1/%2: %3")
+    qDebug() << QString("✓ Using existing tile %1/%2: %3")
                     .arg(m_currentTileIndex + 1).arg(m_tiles.size())
                     .arg(QFileInfo(tile.filename).fileName());
         
@@ -368,11 +620,14 @@ void MessierMosaicCreator::onTileDownloaded() {
             
             qint64 downloadTime = m_downloadStartTime.msecsTo(QDateTime::currentDateTime());
             
-            qDebug() << QString("✅ Tile %1/%2 downloaded: %3ms, %4 bytes, %5x%6 pixels%7")
+    qDebug() << QString("✅ Tile %1/%2 downloaded: %3ms, %4 bytes, %5x%6 pixels%7")
                         .arg(tileIndex + 1).arg(m_tiles.size())
                         .arg(downloadTime).arg(imageData.size())
                         .arg(tile.image.width()).arg(tile.image.height())
-                        .arg(saved ? ", saved" : ", save failed");
+                        .arg(saved ? ", cached" : ", cache failed");
+                        
+            qDebug() << QString("  → Cached as: %1")
+                        .arg(QFileInfo(tile.filename).fileName());
         } else {
             qDebug() << QString("❌ Tile %1/%2 - invalid image data")
                         .arg(tileIndex + 1).arg(m_tiles.size());
@@ -389,118 +644,6 @@ void MessierMosaicCreator::onTileDownloaded() {
     
     // Small delay between downloads
     QTimer::singleShot(500, this, &MessierMosaicCreator::processNextTile);
-}
-
-void MessierMosaicCreator::assembleFinalMosaic() {
-    qDebug() << QString("\n=== Assembling %1 Mosaic ===").arg(m_currentObject.name);
-    
-    int successfulTiles = 0;
-    for (const SimpleTile& tile : m_tiles) {
-        if (tile.downloaded && !tile.image.isNull()) {
-            successfulTiles++;
-        }
-    }
-    
-    qDebug() << QString("Downloaded %1/%2 tiles for %3")
-                .arg(successfulTiles).arg(m_tiles.size()).arg(m_currentObject.name);
-    
-    if (successfulTiles == 0) {
-        qDebug() << "❌ No tiles downloaded successfully";
-        m_statusLabel->setText(QString("Failed to download tiles for %1").arg(m_currentObject.name));
-        m_createButton->setEnabled(true);
-        return;
-    }
-    
-    // Create 3x3 mosaic: 3*512 = 1536 pixels
-    int tileSize = 512;
-    int mosaicSize = 3 * tileSize; // 1536x1536
-    
-    QImage finalMosaic(mosaicSize, mosaicSize, QImage::Format_RGB32);
-    finalMosaic.fill(Qt::black);
-    
-    QPainter painter(&finalMosaic);
-    
-    int tilesPlaced = 0;
-    
-    qDebug() << QString("Placing tiles for %1 in 3x3 grid:").arg(m_currentObject.name);
-    
-    for (const SimpleTile& tile : m_tiles) {
-        if (!tile.downloaded || tile.image.isNull()) {
-            qDebug() << QString("  Skipping tile %1,%2 - not downloaded").arg(tile.gridX).arg(tile.gridY);
-            continue;
-        }
-        
-        // Simple placement: gridX * 512, gridY * 512
-        int pixelX = tile.gridX * tileSize;
-        int pixelY = tile.gridY * tileSize;
-        
-        // Draw the tile
-        painter.drawImage(pixelX, pixelY, tile.image);
-        
-        tilesPlaced++;
-        
-        qDebug() << QString("  ✅ Placed tile (%1,%2) at pixel (%3,%4)")
-                    .arg(tile.gridX).arg(tile.gridY).arg(pixelX).arg(pixelY);
-    }
-    
-    // Add crosshairs and label at center
-    painter.setPen(QPen(Qt::yellow, 3));
-    int centerX = mosaicSize / 2;
-    int centerY = mosaicSize / 2;
-    
-    // Draw crosshairs
-    painter.drawLine(centerX - 30, centerY, centerX + 30, centerY);
-    painter.drawLine(centerX, centerY - 30, centerX, centerY + 30);
-    
-    // Add object label
-    painter.setPen(QPen(Qt::yellow, 1));
-    painter.setFont(QFont("Arial", 14, QFont::Bold));
-    QString labelText = m_currentObject.name;
-    if (!m_currentObject.common_name.isEmpty()) {
-        labelText = m_currentObject.common_name;
-    }
-    painter.drawText(centerX + 40, centerY - 10, labelText);
-    
-    // Add object type label
-    painter.setFont(QFont("Arial", 10));
-    painter.drawText(centerX + 40, centerY + 10, 
-                    MessierCatalog::objectTypeToString(m_currentObject.object_type));
-    
-    painter.end();
-    
-    // Store the full mosaic for potential zooming
-    m_fullMosaic = finalMosaic;
-    
-    // Save final mosaic
-    QString objectName = m_currentObject.name.toLower();
-    QString mosaicFilename = QString("%1/%2_mosaic_3x3.png").arg(m_outputDir).arg(objectName);
-    bool saved = finalMosaic.save(mosaicFilename);
-    
-    qDebug() << QString("\n🖼️  %1 mosaic complete!").arg(m_currentObject.name);
-    qDebug() << QString("📁 Size: %1×%2 pixels (%3 tiles placed)")
-                .arg(mosaicSize).arg(mosaicSize).arg(tilesPlaced);
-    qDebug() << QString("📁 Saved to: %1 (%2)")
-                .arg(mosaicFilename).arg(saved ? "SUCCESS" : "FAILED");
-    
-    // Update preview with 1:1 aspect ratio
-    QPixmap preview = QPixmap::fromImage(finalMosaic.scaled(400, 400, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-    m_previewLabel->setPixmap(preview);
-    
-    // Also save a smaller preview
-    QString previewFilename = QString("%1/%2_preview.jpg").arg(m_outputDir).arg(objectName);
-    QImage preview512 = finalMosaic.scaled(512, 512, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-    preview512.save(previewFilename);
-    qDebug() << QString("📁 Preview: %1").arg(previewFilename);
-    
-    saveProgressReport();
-    
-    m_statusLabel->setText(QString("✅ %1 mosaic complete! (%2 tiles)")
-                          .arg(m_currentObject.name).arg(tilesPlaced));
-    
-    qDebug() << QString("\n🎯 %1 MOSAIC COMPLETE!").arg(m_currentObject.name);
-    qDebug() << QString("✅ %1 should be visible in the center tile with crosshairs").arg(labelText);
-    
-    m_createButton->setEnabled(true);
 }
 
 void MessierMosaicCreator::saveProgressReport() {
@@ -610,6 +753,196 @@ bool MessierMosaicCreator::isValidJpeg(const QString& filename) {
     return false;
 }
 
+void MessierMosaicCreator::updateGridSize() {
+    QVariantList gridData = m_gridSizeSelector->currentData().toList();
+    if (gridData.size() == 2) {
+        m_gridWidth = gridData[0].toInt();
+        m_gridHeight = gridData[1].toInt();
+        
+        qDebug() << QString("Grid size changed to %1×%2").arg(m_gridWidth).arg(m_gridHeight);
+        
+        // Update the create button text
+        m_createButton->setText(QString("Create %1×%2 Mosaic").arg(m_gridWidth).arg(m_gridHeight));
+        
+        // Clear any existing mosaic since grid size changed
+        m_fullMosaic = QImage();
+        m_previewLabel->clear();
+        m_previewLabel->setText("Select grid size and create mosaic");
+    }
+}
+
+QString MessierMosaicCreator::getGridDisplayName(int width, int height) {
+    if (width == height) {
+        return QString("%1×%1").arg(width);
+    } else {
+        return QString("%1×%2").arg(width).arg(height);
+    }
+}
+
+QString MessierMosaicCreator::getRecommendedGridSize() {
+    // Calculate the larger dimension of the object
+    double maxObjectSize = std::max(m_currentObject.size_arcmin.width(), 
+                                   m_currentObject.size_arcmin.height());
+    
+    // Base field size for 3×3 grid is 41.2 arcmin
+    const double BASE_FIELD = 41.2;
+    
+    // Object should occupy roughly 50-80% of the field for good framing
+    double targetField = maxObjectSize / 0.65;  // Object takes ~65% of field
+    
+    // Calculate required grid size
+    double gridScale = targetField / BASE_FIELD;
+    int recommendedSize = std::max(3, (int)ceil(gridScale));
+    
+    // For very elongated objects, suggest rectangular grids
+    double aspectRatio = m_currentObject.size_arcmin.width() / m_currentObject.size_arcmin.height();
+    
+    QString recommendation;
+    
+    if (aspectRatio > 2.0 || aspectRatio < 0.5) {
+        // Highly elongated object - suggest rectangular grid
+        int width = recommendedSize;
+        int height = recommendedSize;
+        
+        if (aspectRatio > 2.0) {
+            // Wide object - make grid wider
+            width = (int)(recommendedSize * 1.5);
+        } else {
+            // Tall object - make grid taller  
+            height = (int)(recommendedSize * 1.5);
+        }
+        
+        recommendation = QString("%1×%2 grid (%3×%4 arcmin)")
+                         .arg(width).arg(height)
+                         .arg((width * BASE_FIELD / 3.0), 0, 'f', 0)
+                         .arg((height * BASE_FIELD / 3.0), 0, 'f', 0);
+    } else {
+        // Regular object - suggest square grid
+        recommendation = QString("%1×%1 grid (%2 arcmin)")
+                        .arg(recommendedSize)
+                        .arg((recommendedSize * BASE_FIELD / 3.0), 0, 'f', 0);
+    }
+    
+    // Add size category explanation
+    if (maxObjectSize < 5.0) {
+        recommendation += " (small object)";
+    } else if (maxObjectSize < 20.0) {
+        recommendation += " (medium object)";
+    } else if (maxObjectSize < 60.0) {
+        recommendation += " (large object)";
+    } else {
+        recommendation += " (very large object)";
+    }
+    
+    return recommendation;
+}
+
+void MessierMosaicCreator::updateGridRecommendation() {
+    // Get recommended grid parameters
+    double maxObjectSize = std::max(m_currentObject.size_arcmin.width(), 
+                                   m_currentObject.size_arcmin.height());
+    const double BASE_FIELD = 41.2;
+    double targetField = maxObjectSize / 0.65;
+    double gridScale = targetField / BASE_FIELD;
+    int recommendedSize = std::max(3, (int)ceil(gridScale));
+    
+    // Update tooltip with specific guidance
+    QString tooltip = QString(
+        "Object size: %1×%2 arcmin\n"
+        "Recommended: %3×%3 grid or larger\n"
+        "Current selection covers %4 arcmin\n\n"
+        "• 3×3 (41 arcmin) - Small objects (<10 arcmin)\n"
+        "• 6×6 (83 arcmin) - Medium objects (10-40 arcmin)\n"
+        "• 10×10 (137 arcmin) - Large objects (40-80 arcmin)\n"
+        "• 15×15 (206 arcmin) - Very large objects (>80 arcmin)\n"
+        "• 20×10 (275×137 arcmin) - M31 Andromeda Galaxy"
+    ).arg(m_currentObject.size_arcmin.width(), 0, 'f', 1)
+     .arg(m_currentObject.size_arcmin.height(), 0, 'f', 1)
+     .arg(recommendedSize)
+     .arg((std::max(m_gridWidth, m_gridHeight) * BASE_FIELD / 3.0), 0, 'f', 0);
+    
+    m_gridSizeSelector->setToolTip(tooltip);
+}
+
+void MessierMosaicCreator::testGridValidation() {
+    qDebug() << "\n=== GRID VALIDATION TEST ===";
+    
+    // Test with M51 coordinates
+    SkyPosition testPos = {202.4695833, 47.1951667, "M51_Test", "Grid validation test"};
+    long long testPixel = m_hipsClient->calculateHealPixel(testPos, 8);
+    
+    qDebug() << QString("Test center pixel: %1").arg(testPixel);
+    
+    // Generate reference 3×3 grid
+    QList<QList<long long>> reference3x3 = m_hipsClient->createProper3x3Grid(testPixel, 8);
+    
+    qDebug() << "\nReference 3×3 grid:";
+    for (int y = 0; y < 3; y++) {
+        QString row = "  ";
+        for (int x = 0; x < 3; x++) {
+            row += QString("[%1] ").arg(reference3x3[y][x]);
+        }
+        qDebug() << row;
+    }
+    
+    // Test different grid sizes
+    QList<QPair<int,int>> testSizes = {{4,4}, {5,5}, {6,6}, {4,3}, {6,4}};
+    
+    for (const auto& size : testSizes) {
+        int width = size.first;
+        int height = size.second;
+        
+        qDebug() << QString("\n--- Testing %1×%2 grid ---").arg(width).arg(height);
+        
+        // Generate larger grid
+        QList<QList<long long>> largerGrid = m_hipsClient->createProperNxMGrid(testPixel, 8, width, height);
+        
+        // Extract center 3×3 from larger grid
+        int centerX = width / 2;
+        int centerY = height / 2;
+        
+        bool validationPassed = true;
+        QList<QList<long long>> extracted3x3;
+        extracted3x3.resize(3);
+        
+        qDebug() << QString("Extracting center 3×3 from position (%1,%2):").arg(centerX).arg(centerY);
+        
+        for (int y = 0; y < 3; y++) {
+            extracted3x3[y].resize(3);
+            QString row = "  ";
+            for (int x = 0; x < 3; x++) {
+                int sourceY = centerY - 1 + y;  // -1,0,1 offset from center
+                int sourceX = centerX - 1 + x;  // -1,0,1 offset from center
+                
+                if (sourceX >= 0 && sourceX < width && sourceY >= 0 && sourceY < height) {
+                    extracted3x3[y][x] = largerGrid[sourceY][sourceX];
+                    row += QString("[%1] ").arg(extracted3x3[y][x]);
+                    
+                    // Compare with reference
+                    if (extracted3x3[y][x] != reference3x3[y][x]) {
+                        qDebug() << QString("❌ MISMATCH at (%1,%2): extracted=%3, reference=%4")
+                                    .arg(x).arg(y).arg(extracted3x3[y][x]).arg(reference3x3[y][x]);
+                        validationPassed = false;
+                    }
+                } else {
+                    row += "[OOB] ";
+                    qDebug() << QString("❌ OUT OF BOUNDS at (%1,%2)").arg(x).arg(y);
+                    validationPassed = false;
+                }
+            }
+            qDebug() << row;
+        }
+        
+        if (validationPassed) {
+            qDebug() << QString("✅ %1×%2 grid validation PASSED").arg(width).arg(height);
+        } else {
+            qDebug() << QString("❌ %1×%2 grid validation FAILED").arg(width).arg(height);
+        }
+    }
+    
+    qDebug() << "\n=== END GRID VALIDATION TEST ===\n";
+}
+
 void MessierMosaicCreator::updatePreviewDisplay() {
     if (m_fullMosaic.isNull()) {
         return;  // No mosaic to display yet
@@ -646,15 +979,15 @@ QImage MessierMosaicCreator::createZoomedView(const QImage& fullMosaic) {
                 .arg(fullMosaic.width()/2).arg(fullMosaic.height()/2)
                 .arg(actualCenter.x()).arg(actualCenter.y());
     
-    // Use REAL plate solve data from M1 mosaic:
-    // Actual field: 41.2 x 41.2 arcmin for 3x3 mosaic
-    // Actual pixel scale: 1.61 arcsec/pixel
+    // Use REAL plate solve data from M1 mosaic, scaled for different grid sizes:
+    // 3x3 grid: 41.2 x 41.2 arcmin (measured)
+    // Larger grids scale proportionally: NxM grid = (N/3 * 41.2) x (M/3 * 41.2) arcmin
     const double ARCSEC_PER_PIXEL = 1.61;  // From actual plate solve
-    const double TOTAL_FIELD_ARCMIN = 41.2;  // From actual plate solve
+    const double BASE_FIELD_ARCMIN = 41.2;  // 3x3 measured field
     
-    // Calculate field in both directions (assume square for now)
-    double fieldWidth = TOTAL_FIELD_ARCMIN;
-    double fieldHeight = TOTAL_FIELD_ARCMIN;
+    // Calculate actual field for current grid size
+    double fieldWidth = (m_gridWidth / 3.0) * BASE_FIELD_ARCMIN;
+    double fieldHeight = (m_gridHeight / 3.0) * BASE_FIELD_ARCMIN;
     
     // Get object size in arcminutes with adaptive margins
     double objectWidth = m_currentObject.size_arcmin.width();

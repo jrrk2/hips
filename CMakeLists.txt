@@ -57,40 +57,6 @@ set(PROPER_HIPS_SOURCES
     ProperHipsClient.h
 )
 
-# Create the original ProperHipsClient executable
-add_executable(ProperHipsClient
-    main.cpp
-    ${PROPER_HIPS_SOURCES}
-)
-
-target_link_libraries(ProperHipsClient
-    Qt6::Core
-    Qt6::Network
-    Qt6::Widgets
-)
-
-if(HEALPIX_LIBRARY)
-    target_link_libraries(ProperHipsClient ${HEALPIX_LIBRARY})
-endif()
-
-# Create the M51 Mosaic Creator executable
-add_executable(M51MosaicCreator
-    main_m51_mosaic.cpp
-    ${PROPER_HIPS_SOURCES}
-    M51MosaicClient.cpp
-    M51MosaicClient.h
-)
-
-target_link_libraries(M51MosaicCreator
-    Qt6::Core
-    Qt6::Network
-    Qt6::Widgets
-)
-
-if(HEALPIX_LIBRARY)
-    target_link_libraries(M51MosaicCreator ${HEALPIX_LIBRARY})
-endif()
-
 # Create the Messier Mosaic Creator executable
 add_executable(MessierMosaicCreator
     main_messier_mosaic.cpp
@@ -126,8 +92,6 @@ endif()
 
 # Compiler flags
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(ProperHipsClient PRIVATE -Wall -Wextra)
-    target_compile_options(M51MosaicCreator PRIVATE -Wall -Wextra)
     target_compile_options(SimpleHipsTest PRIVATE -Wall -Wextra)
 endif()
 
@@ -140,15 +104,10 @@ if(APPLE)
     # Link against system frameworks if needed
     find_library(FOUNDATION_FRAMEWORK Foundation)
     find_library(COCOA_FRAMEWORK Cocoa)
-    
-    if(FOUNDATION_FRAMEWORK AND COCOA_FRAMEWORK)
-        target_link_libraries(ProperHipsClient ${FOUNDATION_FRAMEWORK} ${COCOA_FRAMEWORK})
-        target_link_libraries(M51MosaicCreator ${FOUNDATION_FRAMEWORK} ${COCOA_FRAMEWORK})
-    endif()
 endif()
 
 # Installation targets
-install(TARGETS ProperHipsClient M51MosaicCreator SimpleHipsTest
+install(TARGETS SimpleHipsTest
     RUNTIME DESTINATION bin
 )
 
@@ -169,23 +128,8 @@ message(STATUS "HEALPix include: ${HEALPIX_INCLUDE_DIR}")
 message(STATUS "HEALPix library: ${HEALPIX_LIBRARY}")
 message(STATUS "")
 message(STATUS "Executables to build:")
-message(STATUS "  ProperHipsClient   - Original HiPS tester")
-message(STATUS "  M51MosaicCreator   - M51 mosaic generator")
 message(STATUS "  SimpleHipsTest     - Minimal test program")
 message(STATUS "")
-
-# Custom targets for convenience
-add_custom_target(test_hips
-    COMMAND ${CMAKE_BINARY_DIR}/ProperHipsClient
-    DEPENDS ProperHipsClient
-    COMMENT "Running HiPS connectivity test"
-)
-
-add_custom_target(create_m51
-    COMMAND ${CMAKE_BINARY_DIR}/M51MosaicCreator
-    DEPENDS M51MosaicCreator
-    COMMENT "Creating M51 mosaic"
-)
 
 add_custom_target(simple_test
     COMMAND ${CMAKE_BINARY_DIR}/SimpleHipsTest
@@ -196,8 +140,6 @@ add_custom_target(simple_test
 # Help target
 add_custom_target(help_build
     COMMAND echo "Available targets:"
-    COMMAND echo "  make ProperHipsClient  - Build original HiPS client"
-    COMMAND echo "  make M51MosaicCreator  - Build M51 mosaic creator"
     COMMAND echo "  make SimpleHipsTest    - Build simple test"
     COMMAND echo "  make test_hips         - Build and run HiPS test"
     COMMAND echo "  make create_m51        - Build and run M51 creator"
