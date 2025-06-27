@@ -19,6 +19,7 @@
 #include <QLabel>
 #include <QGroupBox>
 #include <QTextEdit>
+#include <QCheckBox>
 #include "ProperHipsClient.h"
 #include "MessierCatalog.h"
 
@@ -47,9 +48,11 @@ private:
     QTextEdit* m_objectDetails;
     QLabel* m_previewLabel;
     QLabel* m_statusLabel;
+    QCheckBox* m_zoomToObjectCheckBox;
     
     // Current selection
     MessierObject m_currentObject;
+    QImage m_fullMosaic;  // Store the full mosaic for zooming
     
     // Simple tile structure for 3x3 grid
     struct SimpleTile {
@@ -73,6 +76,10 @@ private:
     void saveProgressReport();
     bool checkExistingTile(const SimpleTile& tile);
     bool isValidJpeg(const QString& filename);
+    QImage createZoomedView(const QImage& fullMosaic);
+    void updatePreviewDisplay();
+    QPoint findBrightnessCenter(const QImage& image);
+    QImage applyGaussianBlur(const QImage& image, int radius);
 };
 
 MessierMosaicCreator::MessierMosaicCreator(QWidget *parent) : QWidget(parent) {
@@ -118,8 +125,13 @@ void MessierMosaicCreator::setupUI() {
     m_createButton = new QPushButton("Create 3x3 Mosaic", this);
     connect(m_createButton, &QPushButton::clicked, this, &MessierMosaicCreator::onCreateMosaicClicked);
     
+    m_zoomToObjectCheckBox = new QCheckBox("Zoom to object size", this);
+    m_zoomToObjectCheckBox->setToolTip("Crop display to show only the catalogued size of the Messier object");
+    connect(m_zoomToObjectCheckBox, &QCheckBox::toggled, this, &MessierMosaicCreator::updatePreviewDisplay);
+    
     selectorLayout->addWidget(m_objectSelector);
     selectorLayout->addWidget(m_createButton);
+    selectorLayout->addWidget(m_zoomToObjectCheckBox);
     selectorLayout->addStretch();
     
     selectionLayout->addLayout(selectorLayout);
@@ -456,6 +468,9 @@ void MessierMosaicCreator::assembleFinalMosaic() {
     
     painter.end();
     
+    // Store the full mosaic for potential zooming
+    m_fullMosaic = finalMosaic;
+    
     // Save final mosaic
     QString objectName = m_currentObject.name.toLower();
     QString mosaicFilename = QString("%1/%2_mosaic_3x3.png").arg(m_outputDir).arg(objectName);
@@ -593,6 +608,267 @@ bool MessierMosaicCreator::isValidJpeg(const QString& filename) {
     }
     
     return false;
+}
+
+void MessierMosaicCreator::updatePreviewDisplay() {
+    if (m_fullMosaic.isNull()) {
+        return;  // No mosaic to display yet
+    }
+    
+    QImage displayImage;
+    
+    if (m_zoomToObjectCheckBox->isChecked()) {
+        displayImage = createZoomedView(m_fullMosaic);
+        qDebug() << QString("Displaying zoomed view of %1 (%2 × %3 arcmin)")
+                    .arg(m_currentObject.name)
+                    .arg(m_currentObject.size_arcmin.width(), 0, 'f', 1)
+                    .arg(m_currentObject.size_arcmin.height(), 0, 'f', 1);
+    } else {
+        displayImage = m_fullMosaic;
+        qDebug() << QString("Displaying full 3x3 mosaic of %1").arg(m_currentObject.name);
+    }
+    
+    // Scale to fit 400x400 preview while maintaining aspect ratio
+    QPixmap preview = QPixmap::fromImage(displayImage.scaled(400, 400, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    m_previewLabel->setPixmap(preview);
+}
+
+QImage MessierMosaicCreator::createZoomedView(const QImage& fullMosaic) {
+    if (fullMosaic.isNull()) {
+        return QImage();
+    }
+    
+    // First, find the actual center of the object based on brightness
+    QPoint actualCenter = findBrightnessCenter(fullMosaic);
+    
+    qDebug() << QString("Auto-centering %1: geometric center (%2,%3) vs brightness center (%4,%5)")
+                .arg(m_currentObject.name)
+                .arg(fullMosaic.width()/2).arg(fullMosaic.height()/2)
+                .arg(actualCenter.x()).arg(actualCenter.y());
+    
+    // Use REAL plate solve data from M1 mosaic:
+    // Actual field: 41.2 x 41.2 arcmin for 3x3 mosaic
+    // Actual pixel scale: 1.61 arcsec/pixel
+    const double ARCSEC_PER_PIXEL = 1.61;  // From actual plate solve
+    const double TOTAL_FIELD_ARCMIN = 41.2;  // From actual plate solve
+    
+    // Calculate field in both directions (assume square for now)
+    double fieldWidth = TOTAL_FIELD_ARCMIN;
+    double fieldHeight = TOTAL_FIELD_ARCMIN;
+    
+    // Get object size in arcminutes with adaptive margins
+    double objectWidth = m_currentObject.size_arcmin.width();
+    double objectHeight = m_currentObject.size_arcmin.height();
+    
+    // Use more conservative adaptive padding based on object size
+    double paddingFactor;
+    if (objectWidth < 1.0 || objectHeight < 1.0) {
+        paddingFactor = 8.0;  // Extremely small objects get 8x margin
+    } else if (objectWidth < 3.0 || objectHeight < 3.0) {
+        paddingFactor = 5.0;  // Very small objects get 5x margin  
+    } else if (objectWidth < 8.0 || objectHeight < 8.0) {
+        paddingFactor = 3.0;  // Small objects get 3x margin
+    } else if (objectWidth < 20.0 || objectHeight < 20.0) {
+        paddingFactor = 2.0;  // Medium objects get 2x margin
+    } else {
+        paddingFactor = 1.5;  // Large objects get 1.5x margin
+    }
+    
+    objectWidth *= paddingFactor;
+    objectHeight *= paddingFactor;
+    
+    // Calculate what fraction of the full mosaic the object occupies
+    double widthFraction = objectWidth / fieldWidth;
+    double heightFraction = objectHeight / fieldHeight;
+    
+    // Conservative zoom limits based on real field size
+    widthFraction = std::max(0.3, std::min(1.0, widthFraction));   // At least 30% of mosaic
+    heightFraction = std::max(0.3, std::min(1.0, heightFraction)); // At least 30% of mosaic
+    
+    // For very small objects, use even more conservative minimum zoom
+    if (m_currentObject.size_arcmin.width() < 2.0 || m_currentObject.size_arcmin.height() < 2.0) {
+        widthFraction = std::max(widthFraction, 0.5);   // Minimum 50% for tiny objects
+        heightFraction = std::max(heightFraction, 0.5); // Minimum 50% for tiny objects
+        qDebug() << QString("  Applied conservative minimum zoom for very small object");
+    }
+    
+    // Calculate crop rectangle centered on the brightness peak
+    int cropWidth = static_cast<int>(fullMosaic.width() * widthFraction);
+    int cropHeight = static_cast<int>(fullMosaic.height() * heightFraction);
+    
+    int cropX = actualCenter.x() - cropWidth / 2;
+    int cropY = actualCenter.y() - cropHeight / 2;
+    
+    // Ensure crop rectangle is within bounds
+    cropX = std::max(0, std::min(cropX, fullMosaic.width() - cropWidth));
+    cropY = std::max(0, std::min(cropY, fullMosaic.height() - cropHeight));
+    
+    QRect cropRect(cropX, cropY, cropWidth, cropHeight);
+    
+    // Calculate the actual angular size of the cropped view
+    double cropFieldWidth = (cropWidth * ARCSEC_PER_PIXEL) / 60.0;   // Convert to arcmin
+    double cropFieldHeight = (cropHeight * ARCSEC_PER_PIXEL) / 60.0; // Convert to arcmin
+    
+    // Calculate offset from geometric center for debugging
+    int offsetX = actualCenter.x() - fullMosaic.width()/2;
+    int offsetY = actualCenter.y() - fullMosaic.height()/2;
+    
+    qDebug() << QString("Zoom calculation for %1 (using plate solve data):").arg(m_currentObject.name);
+    qDebug() << QString("  Object size: %1 × %2 arcmin (with %3x padding: %4 × %5)")
+                .arg(m_currentObject.size_arcmin.width(), 0, 'f', 1)
+                .arg(m_currentObject.size_arcmin.height(), 0, 'f', 1)
+                .arg(paddingFactor, 0, 'f', 1)
+                .arg(objectWidth, 0, 'f', 1)
+                .arg(objectHeight, 0, 'f', 1);
+    qDebug() << QString("  Full field: %1 × %2 arcmin (%3 arcsec/pixel)")
+                .arg(fieldWidth, 0, 'f', 1)
+                .arg(fieldHeight, 0, 'f', 1)
+                .arg(ARCSEC_PER_PIXEL, 0, 'f', 2);
+    qDebug() << QString("  Crop field: %1 × %2 arcmin (%3×%4 pixels)")
+                .arg(cropFieldWidth, 0, 'f', 1)
+                .arg(cropFieldHeight, 0, 'f', 1)
+                .arg(cropWidth).arg(cropHeight);
+    qDebug() << QString("  Brightness offset: %1,%2 pixels from geometric center")
+                .arg(offsetX).arg(offsetY);
+    qDebug() << QString("  Crop fraction: %1 × %2, Crop rect: %3,%4")
+                .arg(widthFraction, 0, 'f', 3)
+                .arg(heightFraction, 0, 'f', 3)
+                .arg(cropX).arg(cropY);
+    
+    return fullMosaic.copy(cropRect);
+}
+
+QPoint MessierMosaicCreator::findBrightnessCenter(const QImage& image) {
+    if (image.isNull()) {
+        return QPoint(image.width()/2, image.height()/2);
+    }
+    
+    // Convert to grayscale and apply slight blur to reduce noise
+    QImage workingImage = image.convertToFormat(QImage::Format_RGB32);
+    QImage blurred = applyGaussianBlur(workingImage, 3);
+    
+    // Create brightness map
+    int width = blurred.width();
+    int height = blurred.height();
+    
+    // Find the brightest regions using a weighted centroid approach
+    double totalWeightedX = 0.0;
+    double totalWeightedY = 0.0;
+    double totalWeight = 0.0;
+    
+    // First pass: find the maximum brightness to normalize
+    int maxBrightness = 0;
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            QRgb pixel = blurred.pixel(x, y);
+            int brightness = qGray(pixel);
+            maxBrightness = std::max(maxBrightness, brightness);
+        }
+    }
+    
+    if (maxBrightness == 0) {
+        return QPoint(width/2, height/2);  // Fallback to center
+    }
+    
+    // Second pass: calculate weighted centroid using only bright pixels
+    // Use threshold to focus on the brightest regions (top 30% of brightness)
+    int brightnessThreshold = static_cast<int>(maxBrightness * 0.7);
+    
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            QRgb pixel = blurred.pixel(x, y);
+            int brightness = qGray(pixel);
+            
+            // Only consider bright pixels for centroid calculation
+            if (brightness > brightnessThreshold) {
+                // Weight by brightness squared to emphasize the brightest areas
+                double weight = static_cast<double>(brightness * brightness);
+                
+                totalWeightedX += x * weight;
+                totalWeightedY += y * weight;
+                totalWeight += weight;
+            }
+        }
+    }
+    
+    QPoint center;
+    if (totalWeight > 0) {
+        center.setX(static_cast<int>(totalWeightedX / totalWeight));
+        center.setY(static_cast<int>(totalWeightedY / totalWeight));
+    } else {
+        // Fallback to geometric center if no bright regions found
+        center = QPoint(width/2, height/2);
+    }
+    
+    // Ensure the center is within the image bounds
+    center.setX(std::max(0, std::min(center.x(), width - 1)));
+    center.setY(std::max(0, std::min(center.y(), height - 1)));
+    
+    qDebug() << QString("Brightness analysis: max=%1, threshold=%2, weight=%3, center=(%4,%5)")
+                .arg(maxBrightness).arg(brightnessThreshold).arg(totalWeight, 0, 'f', 0)
+                .arg(center.x()).arg(center.y());
+    
+    return center;
+}
+
+QImage MessierMosaicCreator::applyGaussianBlur(const QImage& image, int radius) {
+    if (image.isNull() || radius <= 0) {
+        return image;
+    }
+    
+    QImage result = image.copy();
+    int width = result.width();
+    int height = result.height();
+    
+    // Simple box blur approximation of Gaussian blur
+    // Apply horizontal blur
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            int totalR = 0, totalG = 0, totalB = 0;
+            int count = 0;
+            
+            for (int dx = -radius; dx <= radius; dx++) {
+                int nx = x + dx;
+                if (nx >= 0 && nx < width) {
+                    QRgb pixel = image.pixel(nx, y);
+                    totalR += qRed(pixel);
+                    totalG += qGreen(pixel);
+                    totalB += qBlue(pixel);
+                    count++;
+                }
+            }
+            
+            if (count > 0) {
+                result.setPixel(x, y, qRgb(totalR/count, totalG/count, totalB/count));
+            }
+        }
+    }
+    
+    // Apply vertical blur
+    QImage final = result.copy();
+    for (int x = 0; x < width; x++) {
+        for (int y = 0; y < height; y++) {
+            int totalR = 0, totalG = 0, totalB = 0;
+            int count = 0;
+            
+            for (int dy = -radius; dy <= radius; dy++) {
+                int ny = y + dy;
+                if (ny >= 0 && ny < height) {
+                    QRgb pixel = result.pixel(x, ny);
+                    totalR += qRed(pixel);
+                    totalG += qGreen(pixel);
+                    totalB += qBlue(pixel);
+                    count++;
+                }
+            }
+            
+            if (count > 0) {
+                final.setPixel(x, y, qRgb(totalR/count, totalG/count, totalB/count));
+            }
+        }
+    }
+    
+    return final;
 }
 
 // Add missing constellation to string function
