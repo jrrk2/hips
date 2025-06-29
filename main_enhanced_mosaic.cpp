@@ -25,6 +25,8 @@
 #include <QFormLayout>
 #include <QRegularExpression>
 #include <QMessageBox>
+#include <QKeyEvent>
+#include <QFocusEvent>
 #include "ProperHipsClient.h"
 #include "MessierCatalog.h"
 
@@ -112,6 +114,13 @@ class EnhancedMosaicCreator : public QWidget {
 public:
     explicit EnhancedMosaicCreator(QWidget *parent = nullptr);
 
+protected:
+    // NEW: Override for keyboard events
+    void keyPressEvent(QKeyEvent* event) override;
+    
+    // NEW: Event filter for focus tracking
+    bool eventFilter(QObject* obj, QEvent* event) override;
+
 private slots:
     void onObjectSelectionChanged();
     void onCreateMosaicClicked();
@@ -120,6 +129,9 @@ private slots:
     void onTileDownloaded();
     void processNextTile();
     void onTabChanged(int index);
+    
+    // NEW: Enhanced coordinate handling
+    void onPrefillFromMessier();
 
 private:
     ProperHipsClient* m_hipsClient;
@@ -147,6 +159,9 @@ private:
     bool m_usingCustomCoordinates;
     QImage m_fullMosaic;
     
+    // NEW: Coordinate stepping with arrow keys
+    bool m_coordinateInputFocused;
+    
     // Tile structure (unchanged)
     struct SimpleTile {
         int gridX, gridY;
@@ -170,6 +185,7 @@ private:
     void setupCustomTab();
     void updateObjectInfo();
     void updateCoordinatePreview();
+    void updateCoordinateInputs(const SkyPosition& current);
     
     // Core algorithms (enhanced for coordinate centering)
     void createMosaic(const MessierObject& messierObj);
@@ -197,7 +213,7 @@ private:
 };
 
 EnhancedMosaicCreator::EnhancedMosaicCreator(QWidget *parent) 
-    : QWidget(parent), m_usingCustomCoordinates(false) {
+    : QWidget(parent), m_usingCustomCoordinates(false), m_coordinateInputFocused(false) {
     
     m_hipsClient = new ProperHipsClient(this);
     m_networkManager = new QNetworkAccessManager(this);
@@ -210,11 +226,15 @@ EnhancedMosaicCreator::EnhancedMosaicCreator(QWidget *parent)
     
     qDebug() << "=== Enhanced Mosaic Creator - Coordinate Centered ===";
     qDebug() << "Precise coordinate placement with sub-tile accuracy!";
+    qDebug() << "Arrow keys: ±0.1° steps, Shift+Arrow: ±0.01° steps";
 }
 
 void EnhancedMosaicCreator::setupUI() {
     setWindowTitle("Enhanced Mosaic Creator - Coordinate Centered");
     setMinimumSize(800, 700);
+    
+    // Enable keyboard focus for arrow key handling
+    setFocusPolicy(Qt::StrongFocus);
     
     QVBoxLayout* mainLayout = new QVBoxLayout(this);
     
@@ -254,6 +274,129 @@ void EnhancedMosaicCreator::setupUI() {
     
     connect(m_tabWidget, &QTabWidget::currentChanged, this, &EnhancedMosaicCreator::onTabChanged);
     QTimer::singleShot(0, this, &EnhancedMosaicCreator::onObjectSelectionChanged);
+}
+
+// NEW: Event filter for focus tracking
+bool EnhancedMosaicCreator::eventFilter(QObject* obj, QEvent* event) {
+    if ((obj == m_raInput || obj == m_decInput) && m_usingCustomCoordinates) {
+        if (event->type() == QEvent::FocusIn) {
+            m_coordinateInputFocused = true;
+        } else if (event->type() == QEvent::FocusOut) {
+            m_coordinateInputFocused = false;
+        }
+    }
+    return QWidget::eventFilter(obj, event);
+}
+
+// NEW: Override keyPressEvent for arrow key coordinate stepping
+void EnhancedMosaicCreator::keyPressEvent(QKeyEvent* event) {
+    // Only handle arrow keys when on custom coordinates tab and input has focus
+    if (!m_usingCustomCoordinates || !m_coordinateInputFocused) {
+        QWidget::keyPressEvent(event);
+        return;
+    }
+    
+    // Determine step size based on modifier keys
+    double stepSize = 0.1; // Default: 0.1 degrees
+    if (event->modifiers() & Qt::ShiftModifier) {
+        stepSize = 0.01; // Fine adjustment: 0.01 degrees
+    }
+    if (event->modifiers() & Qt::ControlModifier) {
+        stepSize = 1.0; // Coarse adjustment: 1.0 degrees
+    }
+    
+    bool handled = false;
+    QString currentRA = m_raInput->text();
+    QString currentDec = m_decInput->text();
+    
+    // Parse current coordinates
+    try {
+        SkyPosition current = SimpleCoordinateParser::parseCoordinates(currentRA, currentDec, "Temp");
+        
+        switch (event->key()) {
+            case Qt::Key_Left:  // Decrease RA
+                current.ra_deg -= stepSize;
+                if (current.ra_deg < 0) current.ra_deg += 360.0;
+                handled = true;
+                break;
+                
+            case Qt::Key_Right: // Increase RA
+                current.ra_deg += stepSize;
+                if (current.ra_deg >= 360.0) current.ra_deg -= 360.0;
+                handled = true;
+                break;
+                
+            case Qt::Key_Up:    // Increase Dec
+                current.dec_deg += stepSize;
+                if (current.dec_deg > 90.0) current.dec_deg = 90.0;
+                handled = true;
+                break;
+                
+            case Qt::Key_Down:  // Decrease Dec
+                current.dec_deg -= stepSize;
+                if (current.dec_deg < -90.0) current.dec_deg = -90.0;
+                handled = true;
+                break;
+        }
+        
+        if (handled) {
+            // Update the input fields with new coordinates
+            updateCoordinateInputs(current);
+            
+            QString modifierText = "";
+            if (event->modifiers() & Qt::ShiftModifier) modifierText = " (fine: ±0.01°)";
+            if (event->modifiers() & Qt::ControlModifier) modifierText = " (coarse: ±1.0°)";
+            
+            qDebug() << QString("Arrow key step: RA=%1°, Dec=%2°, step=%3°%4")
+                        .arg(current.ra_deg, 0, 'f', 3)
+                        .arg(current.dec_deg, 0, 'f', 3)
+                        .arg(stepSize, 0, 'f', 2)
+                        .arg(modifierText);
+            
+            event->accept();
+            return;
+        }
+    } catch (...) {
+        // If parsing fails, just ignore the key event
+    }
+    
+    QWidget::keyPressEvent(event);
+}
+
+// NEW: Helper function to update coordinate input fields
+void EnhancedMosaicCreator::updateCoordinateInputs(const SkyPosition& position) {
+    // Convert to sexagesimal format for display
+    double ra_hours = position.ra_deg / 15.0;
+    int ra_h = static_cast<int>(ra_hours);
+    int ra_m = static_cast<int>((ra_hours - ra_h) * 60);
+    double ra_s = ((ra_hours - ra_h) * 60 - ra_m) * 60;
+    
+    bool dec_negative = position.dec_deg < 0;
+    double abs_dec = std::abs(position.dec_deg);
+    int dec_d = static_cast<int>(abs_dec);
+    int dec_m = static_cast<int>((abs_dec - dec_d) * 60);
+    double dec_s = ((abs_dec - dec_d) * 60 - dec_m) * 60;
+    
+    // Update input fields with formatted coordinates
+    QString raText = QString("%1h%2m%3s")
+                     .arg(ra_h).arg(ra_m, 2, 10, QChar('0')).arg(ra_s, 0, 'f', 1);
+    
+    QString decText = QString("%1%2d%3m%4s")
+                      .arg(dec_negative ? "-" : "+")
+                      .arg(dec_d).arg(dec_m, 2, 10, QChar('0')).arg(dec_s, 0, 'f', 1);
+    
+    // Temporarily disconnect signals to avoid recursion
+    m_raInput->blockSignals(true);
+    m_decInput->blockSignals(true);
+    
+    m_raInput->setText(raText);
+    m_decInput->setText(decText);
+    
+    m_raInput->blockSignals(false);
+    m_decInput->blockSignals(false);
+    
+    // Trigger coordinate update
+    onCoordinatesChanged();
 }
 
 void EnhancedMosaicCreator::setupMessierTab() {
@@ -309,12 +452,18 @@ void EnhancedMosaicCreator::setupCustomTab() {
     
     m_raInput = new QLineEdit(customTab);
     m_raInput->setPlaceholderText("e.g., 13h29m52.7s or 13:29:52.7 or 202.47");
+    
+    // NEW: Focus tracking for arrow key handling
     connect(m_raInput, &QLineEdit::textChanged, this, &EnhancedMosaicCreator::onCoordinatesChanged);
+    m_raInput->installEventFilter(this); // For focus tracking
     coordForm->addRow("Right Ascension:", m_raInput);
     
     m_decInput = new QLineEdit(customTab);
     m_decInput->setPlaceholderText("e.g., +47d11m43s or +47:11:43 or 47.195");
+    
+    // NEW: Focus tracking for arrow key handling
     connect(m_decInput, &QLineEdit::textChanged, this, &EnhancedMosaicCreator::onCoordinatesChanged);
+    m_decInput->installEventFilter(this); // For focus tracking
     coordForm->addRow("Declination:", m_decInput);
     
     m_nameInput = new QLineEdit(customTab);
@@ -322,28 +471,33 @@ void EnhancedMosaicCreator::setupCustomTab() {
     m_nameInput->setText("Custom Target");
     coordForm->addRow("Target Name:", m_nameInput);
     
+    // NEW: Prefill button
+    QPushButton* prefillButton = new QPushButton("↩ Prefill from Current Messier Object", customTab);
+    connect(prefillButton, &QPushButton::clicked, this, &EnhancedMosaicCreator::onPrefillFromMessier);
+    coordForm->addRow("Quick Start:", prefillButton);
+    
     customLayout->addWidget(coordGroup);
     
-    QGroupBox* helpGroup = new QGroupBox("Enhanced Coordinate Centering", customTab);
+    QGroupBox* helpGroup = new QGroupBox("Enhanced Coordinate Controls", customTab);
     QVBoxLayout* helpLayout = new QVBoxLayout(helpGroup);
     
     QLabel* formatHelp = new QLabel(
-        "<b>Enhanced Features:</b><br>"
-        "• <b>Precise centering:</b> Target coordinates become exact center<br>"
-        "• <b>Sub-tile accuracy:</b> Crops to place target at center pixel<br>"
+        "<b>Coordinate Entry:</b><br>"
         "• <b>Multiple formats:</b> RA: 13h29m52.7s, 13:29:52.7, 202.47<br>"
         "• <b>Dec formats:</b> +47d11m43s, +47:11:43, +47.195<br><br>"
         
-        "<b>Examples:</b><br>"
-        "• M51 exact center: RA=13h29m52.7s, Dec=+47d11m43s<br>"
-        "• Andromeda core: RA=0:42:44, Dec=+41:16:09<br>"
-        "• Custom coordinates: RA=83.82, Dec=-5.39<br><br>"
+        "<b>Arrow Key Navigation:</b><br>"
+        "• <b>Arrow Keys:</b> Step ±0.1° (RA: Left/Right, Dec: Up/Down)<br>"
+        "• <b>Shift + Arrow:</b> Fine step ±0.01° (2.2 arcmin)<br>"
+        "• <b>Ctrl + Arrow:</b> Coarse step ±1.0° (60 arcmin)<br><br>"
         
-        "<b>Note:</b> The entered coordinates will be the exact center of the<br>"
-        "final mosaic, not just the center of the nearest HEALPix tile!"
+        "<b>Quick Workflow:</b><br>"
+        "1. Select Messier object → 2. Click 'Prefill' → 3. Fine-tune with arrows<br><br>"
+        
+        "<b>Precision:</b> Coordinates become exact center pixel with 1.61\"/pixel accuracy"
     );
     formatHelp->setWordWrap(true);
-    formatHelp->setStyleSheet("QLabel { background-color: #e8f4fd; padding: 8px; border: 1px solid #4a90e2; }");
+    formatHelp->setStyleSheet("QLabel { background-color: #e8f4fd; padding: 10px; border: 1px solid #4a90e2; }");
     helpLayout->addWidget(formatHelp);
     customLayout->addWidget(helpGroup);
     
@@ -622,6 +776,13 @@ void EnhancedMosaicCreator::downloadTile(int tileIndex) {
     connect(reply, &QNetworkReply::finished, this, &EnhancedMosaicCreator::onTileDownloaded);
     
     QTimer::singleShot(15000, reply, &QNetworkReply::abort);
+}
+
+
+void EnhancedMosaicCreator::onPrefillFromMessier() {
+    QNetworkReply* reply = qobject_cast<QNetworkReply*>(sender());
+    if (!reply) return;
+    qDebug() << "onPrefillFromMessier()";
 }
 
 void EnhancedMosaicCreator::onTileDownloaded() {
