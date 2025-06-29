@@ -13,6 +13,15 @@ if(APPLE)
     # Homebrew include paths
     include_directories(/opt/homebrew/include)
     link_directories(/opt/homebrew/lib)
+    
+    # Xcode-specific settings
+    if(CMAKE_GENERATOR STREQUAL "Xcode")
+        set(CMAKE_XCODE_GENERATE_SCHEME ON)
+        set(CMAKE_XCODE_SCHEME_ENABLE_GPU_FRAME_CAPTURE_MODE "Metal")
+        set(CMAKE_XCODE_SCHEME_ENABLE_GPU_API_VALIDATION ON)
+        # Set proper bundle identifier for Xcode
+        set(CMAKE_XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "com.astronomical.properhips")
+    endif()
 endif()
 
 # Find required packages
@@ -109,6 +118,24 @@ if(HEALPIX_LIBRARY)
     target_link_libraries(MessierMosaicCreator ${HEALPIX_LIBRARY})
 endif()
 
+# Create the Enhanced Mosaic Creator executable (with arbitrary coordinates)
+add_executable(EnhancedMosaicCreator
+    main_enhanced_mosaic.cpp
+    ${PROPER_HIPS_SOURCES}
+    M51MosaicClient.cpp
+    M51MosaicClient.h
+)
+
+target_link_libraries(EnhancedMosaicCreator
+    Qt6::Core
+    Qt6::Network
+    Qt6::Widgets
+)
+
+if(HEALPIX_LIBRARY)
+    target_link_libraries(EnhancedMosaicCreator ${HEALPIX_LIBRARY})
+endif()
+
 # Create a simple test executable (minimal HiPS test)
 add_executable(SimpleHipsTest
     simple_hips_test.cpp
@@ -128,12 +155,14 @@ endif()
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(ProperHipsClient PRIVATE -Wall -Wextra)
     target_compile_options(M51MosaicCreator PRIVATE -Wall -Wextra)
+    target_compile_options(MessierMosaicCreator PRIVATE -Wall -Wextra)
+    target_compile_options(EnhancedMosaicCreator PRIVATE -Wall -Wextra)
     target_compile_options(SimpleHipsTest PRIVATE -Wall -Wextra)
 endif()
 
 # Debug/Release configurations
 set(CMAKE_CXX_FLAGS_DEBUG "-g -O0")
-set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
+set(CMAKE_CXX_FLAGS_RELEASE "-g -O3 -DNDEBUG")
 
 # macOS specific linking
 if(APPLE)
@@ -144,16 +173,48 @@ if(APPLE)
     if(FOUNDATION_FRAMEWORK AND COCOA_FRAMEWORK)
         target_link_libraries(ProperHipsClient ${FOUNDATION_FRAMEWORK} ${COCOA_FRAMEWORK})
         target_link_libraries(M51MosaicCreator ${FOUNDATION_FRAMEWORK} ${COCOA_FRAMEWORK})
+        target_link_libraries(MessierMosaicCreator ${FOUNDATION_FRAMEWORK} ${COCOA_FRAMEWORK})
+        target_link_libraries(EnhancedMosaicCreator ${FOUNDATION_FRAMEWORK} ${COCOA_FRAMEWORK})
+    endif()
+    
+    # Set Xcode-specific properties for each target
+    if(CMAKE_GENERATOR STREQUAL "Xcode")
+        set_target_properties(ProperHipsClient PROPERTIES
+            XCODE_GENERATE_SCHEME ON
+            XCODE_SCHEME_WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        
+        set_target_properties(M51MosaicCreator PROPERTIES
+            XCODE_GENERATE_SCHEME ON
+            XCODE_SCHEME_WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        
+        set_target_properties(MessierMosaicCreator PROPERTIES
+            XCODE_GENERATE_SCHEME ON
+            XCODE_SCHEME_WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        
+        set_target_properties(EnhancedMosaicCreator PROPERTIES
+            XCODE_GENERATE_SCHEME ON
+            XCODE_SCHEME_WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        
+        set_target_properties(SimpleHipsTest PROPERTIES
+            XCODE_GENERATE_SCHEME ON
+            XCODE_SCHEME_WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
     endif()
 endif()
 
 # Installation targets
-install(TARGETS ProperHipsClient M51MosaicCreator SimpleHipsTest
+install(TARGETS ProperHipsClient M51MosaicCreator MessierMosaicCreator EnhancedMosaicCreator SimpleHipsTest
     RUNTIME DESTINATION bin
 )
 
 # Create output directories
 file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/m51_mosaic_tiles)
+file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/messier_mosaics)
+file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/enhanced_mosaics)
 file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/hips_test_results)
 
 # Print configuration summary
@@ -161,6 +222,7 @@ message(STATUS "")
 message(STATUS "ProperHiPS M51 Mosaic Configuration Summary:")
 message(STATUS "============================================")
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
+message(STATUS "Generator: ${CMAKE_GENERATOR}")
 message(STATUS "Qt6 version: ${Qt6_VERSION}")
 message(STATUS "Qt6 Core: ${Qt6Core_VERSION}")
 message(STATUS "Qt6 Network: ${Qt6Network_VERSION}")
@@ -169,9 +231,11 @@ message(STATUS "HEALPix include: ${HEALPIX_INCLUDE_DIR}")
 message(STATUS "HEALPix library: ${HEALPIX_LIBRARY}")
 message(STATUS "")
 message(STATUS "Executables to build:")
-message(STATUS "  ProperHipsClient   - Original HiPS tester")
-message(STATUS "  M51MosaicCreator   - M51 mosaic generator")
-message(STATUS "  SimpleHipsTest     - Minimal test program")
+message(STATUS "  ProperHipsClient       - Original HiPS tester")
+message(STATUS "  M51MosaicCreator       - M51 mosaic generator")
+message(STATUS "  MessierMosaicCreator   - Messier object mosaics")
+message(STATUS "  EnhancedMosaicCreator  - Custom coordinate mosaics")
+message(STATUS "  SimpleHipsTest         - Minimal test program")
 message(STATUS "")
 
 # Custom targets for convenience
@@ -187,22 +251,62 @@ add_custom_target(create_m51
     COMMENT "Creating M51 mosaic"
 )
 
+add_custom_target(create_messier
+    COMMAND ${CMAKE_BINARY_DIR}/MessierMosaicCreator
+    DEPENDS MessierMosaicCreator
+    COMMENT "Creating Messier object mosaics"
+)
+
+add_custom_target(create_enhanced
+    COMMAND ${CMAKE_BINARY_DIR}/EnhancedMosaicCreator
+    DEPENDS EnhancedMosaicCreator
+    COMMENT "Creating enhanced coordinate mosaics"
+)
+
 add_custom_target(simple_test
     COMMAND ${CMAKE_BINARY_DIR}/SimpleHipsTest
     DEPENDS SimpleHipsTest
     COMMENT "Running simple HiPS test"
 )
 
+# Xcode project generation target
+add_custom_target(generate_xcode
+    COMMAND ${CMAKE_COMMAND} -G Xcode -B xcode_build -S ${CMAKE_CURRENT_SOURCE_DIR}
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    COMMENT "Generating Xcode project in xcode_build/ directory"
+    VERBATIM
+)
+
+add_custom_target(open_xcode
+    COMMAND open xcode_build/ProperHipsM51.xcodeproj
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    DEPENDS generate_xcode
+    COMMENT "Opening Xcode project"
+    VERBATIM
+)
+
 # Help target
 add_custom_target(help_build
     COMMAND echo "Available targets:"
-    COMMAND echo "  make ProperHipsClient  - Build original HiPS client"
-    COMMAND echo "  make M51MosaicCreator  - Build M51 mosaic creator"
-    COMMAND echo "  make SimpleHipsTest    - Build simple test"
-    COMMAND echo "  make test_hips         - Build and run HiPS test"
-    COMMAND echo "  make create_m51        - Build and run M51 creator"
-    COMMAND echo "  make simple_test       - Build and run simple test"
-    COMMAND echo "  make install           - Install all executables"
+    COMMAND echo "  make ProperHipsClient      - Build original HiPS client"
+    COMMAND echo "  make M51MosaicCreator      - Build M51 mosaic creator"
+    COMMAND echo "  make MessierMosaicCreator  - Build Messier mosaic creator"
+    COMMAND echo "  make EnhancedMosaicCreator - Build enhanced mosaic creator"
+    COMMAND echo "  make SimpleHipsTest        - Build simple test"
+    COMMAND echo ""
+    COMMAND echo "Run targets:"
+    COMMAND echo "  make test_hips             - Build and run HiPS test"
+    COMMAND echo "  make create_m51            - Build and run M51 creator"
+    COMMAND echo "  make create_messier        - Build and run Messier creator"
+    COMMAND echo "  make create_enhanced       - Build and run enhanced creator"
+    COMMAND echo "  make simple_test           - Build and run simple test"
+    COMMAND echo ""
+    COMMAND echo "Xcode targets:"
+    COMMAND echo "  make generate_xcode        - Generate Xcode project"
+    COMMAND echo "  make open_xcode            - Generate and open Xcode project"
+    COMMAND echo ""
+    COMMAND echo "Other targets:"
+    COMMAND echo "  make install               - Install all executables"
     COMMENT "Showing available build targets"
 )
 
