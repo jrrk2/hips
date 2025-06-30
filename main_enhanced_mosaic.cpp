@@ -361,11 +361,14 @@ void EnhancedMosaicCreator::keyPressEvent(QKeyEvent* event) {
             // Update the input fields with new coordinates
             updateCoordinateInputs(current);
             
+            // NEW: Trigger immediate preview update
+            onCreateCustomMosaicClicked();
+            
             QString modifierText = "";
             if (event->modifiers() & Qt::ShiftModifier) modifierText = " (fine: ±0.01°)";
             if (event->modifiers() & Qt::ControlModifier) modifierText = " (coarse: ±1.0°)";
             
-            qDebug() << QString("Arrow key step: RA=%1°, Dec=%2°, step=%3°%4")
+            qDebug() << QString("Arrow key step: RA=%1°, Dec=%2°, step=%3°%4 - triggering preview")
                         .arg(current.ra_deg, 0, 'f', 3)
                         .arg(current.dec_deg, 0, 'f', 3)
                         .arg(stepSize, 0, 'f', 2)
@@ -614,15 +617,19 @@ void EnhancedMosaicCreator::setupCustomTab() {
     // Connect button signals with lambda functions to get step size
     connect(upButton, &QPushButton::clicked, [this, stepSizeCombo]() {
         adjustCoordinateByButton(0, stepSizeCombo->currentData().toDouble());
+        onCreateCustomMosaicClicked(); // NEW: Trigger preview after button click
     });
     connect(downButton, &QPushButton::clicked, [this, stepSizeCombo]() {
         adjustCoordinateByButton(0, -stepSizeCombo->currentData().toDouble());
+        onCreateCustomMosaicClicked(); // NEW: Trigger preview after button click
     });
     connect(leftButton, &QPushButton::clicked, [this, stepSizeCombo]() {
         adjustCoordinateByButton(-stepSizeCombo->currentData().toDouble(), 0);
+        onCreateCustomMosaicClicked(); // NEW: Trigger preview after button click
     });
     connect(rightButton, &QPushButton::clicked, [this, stepSizeCombo]() {
         adjustCoordinateByButton(stepSizeCombo->currentData().toDouble(), 0);
+        onCreateCustomMosaicClicked(); // NEW: Trigger preview after button click
     });
     
     customLayout->addWidget(adjustGroup);
@@ -896,8 +903,10 @@ void EnhancedMosaicCreator::createTileGrid(const SkyPosition& position) {
             tile.skyCoordinates = healpixToSkyPosition(tile.healpixPixel, order);
             
             QString objectName = position.name.toLower();
-            tile.filename = QString("%1/%2_tile_%3_%4_pixel%5.jpg")
-                           .arg(m_outputDir).arg(objectName).arg(x).arg(y).arg(tile.healpixPixel);
+            tile.filename = QString("%1/tile_pixel%5.jpg")
+                           .arg(m_outputDir).arg(tile.healpixPixel);
+            
+            qDebug() << QDir::currentPath() << tile.filename;
             
             int dir = (tile.healpixPixel / 10000) * 10000;
             tile.url = QString("http://alasky.u-strasbg.fr/DSS/DSSColor/Norder%1/Dir%2/Npix%3.jpg")
