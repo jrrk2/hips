@@ -207,6 +207,9 @@ private:
     QPoint findBrightnessCenter(const QImage& image);
     QImage applyGaussianBlur(const QImage& image, int radius);
     
+    // NEW: Coordinate adjustment by buttons
+    void adjustCoordinateByButton(double deltaRA, double deltaDec);
+    
     // HEALPix coordinate conversion helpers
     SkyPosition healpixToSkyPosition(long long pixel, int order) const;
     double calculateAngularDistance(const SkyPosition& pos1, const SkyPosition& pos2) const;
@@ -413,6 +416,51 @@ void EnhancedMosaicCreator::updateCoordinateInputs(const SkyPosition& position) 
     onCoordinatesChanged();
 }
 
+// NEW: Coordinate adjustment by buttons
+void EnhancedMosaicCreator::adjustCoordinateByButton(double deltaRA, double deltaDec) {
+    if (!m_usingCustomCoordinates || !m_raInput || !m_decInput) {
+        return;
+    }
+    
+    QString currentRA = m_raInput->text();
+    QString currentDec = m_decInput->text();
+    
+    if (currentRA.isEmpty() || currentDec.isEmpty()) {
+        QMessageBox::information(this, "No Coordinates", 
+                               "Please enter coordinates first before using adjustment buttons.");
+        return;
+    }
+    
+    try {
+        SkyPosition current = SimpleCoordinateParser::parseCoordinates(currentRA, currentDec, "Temp");
+        
+        // Apply deltas
+        current.ra_deg += deltaRA;
+        current.dec_deg += deltaDec;
+        
+        // Handle RA wraparound
+        if (current.ra_deg < 0) current.ra_deg += 360.0;
+        if (current.ra_deg >= 360.0) current.ra_deg -= 360.0;
+        
+        // Clamp Dec to valid range
+        if (current.dec_deg > 90.0) current.dec_deg = 90.0;
+        if (current.dec_deg < -90.0) current.dec_deg = -90.0;
+        
+        // Update the input fields
+        updateCoordinateInputs(current);
+        
+        qDebug() << QString("Button adjustment: RA=%1°, Dec=%2° (Δ=%3°,%4°)")
+                    .arg(current.ra_deg, 0, 'f', 3)
+                    .arg(current.dec_deg, 0, 'f', 3)
+                    .arg(deltaRA, 0, 'f', 3)
+                    .arg(deltaDec, 0, 'f', 3);
+        
+    } catch (...) {
+        QMessageBox::warning(this, "Invalid Coordinates", 
+                           "Current coordinates are invalid. Please check the format.");
+    }
+}
+
 void EnhancedMosaicCreator::setupMessierTab() {
     QWidget* messierTab = new QWidget();
     
@@ -514,6 +562,71 @@ void EnhancedMosaicCreator::setupCustomTab() {
     
     customLayout->addWidget(coordGroup);
     
+    // NEW: Add coordinate adjustment buttons
+    QGroupBox* adjustGroup = new QGroupBox("Coordinate Adjustment Buttons", scrollContent);
+    QVBoxLayout* adjustLayout = new QVBoxLayout(adjustGroup);
+    
+    // Create a grid layout for the directional buttons
+    QGridLayout* buttonGrid = new QGridLayout();
+    
+    // Step size controls
+    QHBoxLayout* stepSizeLayout = new QHBoxLayout();
+    QLabel* stepLabel = new QLabel("Step size:", scrollContent);
+    QComboBox* stepSizeCombo = new QComboBox(scrollContent);
+    stepSizeCombo->addItem("0.01° (fine)", 0.01);
+    stepSizeCombo->addItem("0.1° (normal)", 0.1);
+    stepSizeCombo->addItem("1.0° (coarse)", 1.0);
+    stepSizeCombo->setCurrentIndex(1); // Default to 0.1°
+    
+    stepSizeLayout->addWidget(stepLabel);
+    stepSizeLayout->addWidget(stepSizeCombo);
+    stepSizeLayout->addStretch();
+    
+    adjustLayout->addLayout(stepSizeLayout);
+    
+    // Create directional buttons
+    QPushButton* upButton = new QPushButton("▲ +Dec", scrollContent);
+    QPushButton* downButton = new QPushButton("▼ -Dec", scrollContent);
+    QPushButton* leftButton = new QPushButton("◄ -RA", scrollContent);
+    QPushButton* rightButton = new QPushButton("► +RA", scrollContent);
+    
+    // Style the buttons
+    QString buttonStyle = "QPushButton { min-width: 80px; min-height: 30px; font-weight: bold; }";
+    upButton->setStyleSheet(buttonStyle);
+    downButton->setStyleSheet(buttonStyle);
+    leftButton->setStyleSheet(buttonStyle);
+    rightButton->setStyleSheet(buttonStyle);
+    
+    // Arrange buttons in a cross pattern
+    buttonGrid->addWidget(upButton, 0, 1);      // Top center
+    buttonGrid->addWidget(leftButton, 1, 0);    // Middle left
+    buttonGrid->addWidget(rightButton, 1, 2);   // Middle right
+    buttonGrid->addWidget(downButton, 2, 1);    // Bottom center
+    
+    // Add center label
+    QLabel* centerLabel = new QLabel("Current\nPosition", scrollContent);
+    centerLabel->setAlignment(Qt::AlignCenter);
+    centerLabel->setStyleSheet("QLabel { border: 1px solid gray; padding: 5px; background-color: #f0f0f0; }");
+    buttonGrid->addWidget(centerLabel, 1, 1);   // Center
+    
+    adjustLayout->addLayout(buttonGrid);
+    
+    // Connect button signals with lambda functions to get step size
+    connect(upButton, &QPushButton::clicked, [this, stepSizeCombo]() {
+        adjustCoordinateByButton(0, stepSizeCombo->currentData().toDouble());
+    });
+    connect(downButton, &QPushButton::clicked, [this, stepSizeCombo]() {
+        adjustCoordinateByButton(0, -stepSizeCombo->currentData().toDouble());
+    });
+    connect(leftButton, &QPushButton::clicked, [this, stepSizeCombo]() {
+        adjustCoordinateByButton(-stepSizeCombo->currentData().toDouble(), 0);
+    });
+    connect(rightButton, &QPushButton::clicked, [this, stepSizeCombo]() {
+        adjustCoordinateByButton(stepSizeCombo->currentData().toDouble(), 0);
+    });
+    
+    customLayout->addWidget(adjustGroup);
+    
     QGroupBox* helpGroup = new QGroupBox("Enhanced Coordinate Controls", scrollContent);
     QVBoxLayout* helpLayout = new QVBoxLayout(helpGroup);
     
@@ -522,13 +635,14 @@ void EnhancedMosaicCreator::setupCustomTab() {
         "• <b>Multiple formats:</b> RA: 13h29m52.7s, 13:29:52.7, 202.47<br>"
         "• <b>Dec formats:</b> +47d11m43s, +47:11:43, +47.195<br><br>"
         
-        "<b>Arrow Key Navigation:</b><br>"
+        "<b>Navigation Methods:</b><br>"
+        "• <b>Adjustment Buttons:</b> Click directional buttons with selectable step size<br>"
         "• <b>Arrow Keys:</b> Step ±0.1° (RA: Left/Right, Dec: Up/Down)<br>"
         "• <b>Shift + Arrow:</b> Fine step ±0.01° (2.2 arcmin)<br>"
         "• <b>Ctrl + Arrow:</b> Coarse step ±1.0° (60 arcmin)<br><br>"
         
         "<b>Quick Workflow:</b><br>"
-        "1. Select Messier object → 2. Click 'Prefill' → 3. Fine-tune with arrows<br><br>"
+        "1. Select Messier object → 2. Click 'Prefill' → 3. Fine-tune with buttons/arrows<br><br>"
         
         "<b>Precision:</b> Coordinates become exact center pixel with 1.61\"/pixel accuracy"
     );
