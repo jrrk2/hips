@@ -7,7 +7,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # macOS specific settings for your iMac
 if(APPLE)
-    set(CMAKE_OSX_DEPLOYMENT_TARGET "10.15")
+    # Choose a modern default to match Homebrew Qt/HEALPix builds, but allow override
+    if(NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET OR "${CMAKE_OSX_DEPLOYMENT_TARGET}" STREQUAL "")
+        set(CMAKE_OSX_DEPLOYMENT_TARGET "14.0" CACHE STRING "macOS deployment target")
+    endif()
     # Homebrew Qt6 path - updated for your system
     set(CMAKE_PREFIX_PATH "/opt/homebrew/opt/qt6" ${CMAKE_PREFIX_PATH})
     # Homebrew include paths

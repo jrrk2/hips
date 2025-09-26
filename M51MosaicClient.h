@@ -287,7 +287,6 @@ void M51MosaicClient::assembleMosaic() {
     
     // Calculate scaling factors
     double arcsecPerPixel = 450.0 / pow(2, m_config.hipsOrder - 6);
-    double scaleFactor = arcsecPerPixel / m_config.targetResolution;
     
     // Place each tile
     for (const MosaicTile& tile : m_tiles) {

@@ -487,8 +487,22 @@ void ProperHipsClient::printSummary() const {
         surveyResults[result.survey].append(result);
     }
     
-    qDebug() << QString("%-20s %8s %8s %8s %10s").arg("Survey").arg("Success").arg("Avg Time").arg("Avg Size").arg("Coverage");
-    qDebug() << QString("%-20s %8s %8s %8s %10s").arg("--------").arg("-------").arg("--------").arg("--------").arg("--------");
+    // Column headers (left/right aligned via field widths)
+    QString header = QString("%1 %2 %3 %4 %5")
+                        .arg("Survey", -20)
+                        .arg("Success", 8)
+                        .arg("Avg Time", 8)
+                        .arg("Avg Size", 8)
+                        .arg("Coverage", 10);
+    qDebug() << header;
+
+    QString separator = QString("%1 %2 %3 %4 %5")
+                        .arg(QString(20, '-'))
+                        .arg(QString(8, '-'))
+                        .arg(QString(8, '-'))
+                        .arg(QString(8, '-'))
+                        .arg(QString(10, '-'));
+    qDebug() << separator;
     
     QStringList bestSurveys;
     
@@ -508,16 +522,17 @@ void ProperHipsClient::printSummary() const {
             }
         }
         
-        double successRate = double(successful) / double(results.size()) * 100.0;
-        double avgTime = successful > 0 ? double(totalTime) / successful : 0;
-        double avgSize = successful > 0 ? double(totalSize) / successful : 0;
+        double successRate = results.isEmpty() ? 0.0 : (double(successful) / double(results.size()) * 100.0);
+        double avgTime = successful > 0 ? double(totalTime) / successful : 0.0;
+        double avgSizeKB = successful > 0 ? (double(totalSize) / successful) / 1024.0 : 0.0;
         
-        qDebug() << QString("%-20s %7.1f%% %7.0fms %7.0fkB %9.1f%%")
-                    .arg(survey)
-                    .arg(successRate)
-                    .arg(avgTime)
-                    .arg(avgSize / 1024.0)
-                    .arg(successRate);
+        QString row = QString("%1 %2 %3 %4 %5")
+                        .arg(survey.left(20), -20)
+                        .arg(QString::number(successRate, 'f', 1) + "%", 8)
+                        .arg(QString::number(avgTime, 'f', 0) + "ms", 8)
+                        .arg(QString::number(avgSizeKB, 'f', 0) + "kB", 8)
+                        .arg(QString::number(successRate, 'f', 1) + "%", 10);
+        qDebug() << row;
         
         if (successRate >= 90.0) {
             bestSurveys.append(survey);
